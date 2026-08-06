@@ -1383,35 +1383,121 @@ function potenciaSonido(aforo, espacio, tipoEvento){
   return { wpp, wTotal:Math.round(wTotal), wConMargen };
 }
 
-// SAYCO — tarifa general por aforo, expresada como tabla de bloques acumulados (sin cifras $ inventadas más allá
-// de lo que ya traía el módulo). NOTA: el valor exacto depende del documento tarifario oficial de SAYCO vigente;
-// revisar esta función contra ese documento antes de usarla como cifra definitiva.
-function calcularSAYCO(aforo, categoria, cobraEntrada, esGubernamental, ciudadCapital, ingresosBrutos){
+// SAYCO — Manual de Tarifas Espectáculos Públicos, Resolución 007/2017, modificado Res. 83 (30/07/2024).
+// Verificado contra el documento oficial compartido por el usuario. Categorías: Imprescindible/Necesaria/
+// Ambiental/Incidental. No cubre el caso excepcional de bailes/bazares con concertación única especial
+// (requiere justificación escrita aparte) ni el acuerdo individual por recaudo garantizado ≥1000 SMMLV/año
+// (aplica solo a grandes productores con acuerdo particular) — son casos negociados, no estándar.
+function calcularSAYCOGeneralSinCobro(aforo, categoria, ciudadCapital){
+  const bloque = ciudadCapital ? 500 : 1000; // Capital: cada 500p · Pueblo: cada 1.000p (Manual, pág. 6)
+  const bloques = Math.max(1, Math.ceil((aforo||0) / bloque));
+  const tabla = ciudadCapital
+    ? { imprescindible:1, necesaria:0.75, ambiental:0.5, incidental:0.25 }   // pág. 5
+    : { imprescindible:1, necesaria:0.5, ambiental:0.25, incidental:0.15 }; // pág. 6
+  const factorSMMLV = tabla[categoria] ?? tabla.ambiental;
   const cat = categoriasSAYCO.find(c=>c.id===categoria) || categoriasSAYCO[2];
-  if(cobraEntrada){
-    const pct = 0.10;
-    return { modo:"Con cobro de entrada", valor:Math.round((ingresosBrutos||0)*pct), detalle:(pct*100)+"% sobre ingresos brutos (productor ocasional)", verificar:false };
-  }
-  if(esGubernamental){
-    const aforoMax = ciudadCapital ? 1000 : 3000;
-    const factor = ciudadCapital ? 1 : 0.5;
-    const valor = Math.round(SMMLV_2026*factor);
-    return { modo:"Entidad gubernamental / caja de compensación", valor, detalle:factor+" SMMLV por evento diario · aforo máx. "+fmt(aforoMax)+" ("+(ciudadCapital?"capital":"pueblo")+")", excedeAforo:aforo>aforoMax, verificar:false };
-  }
-  const bloques = Math.ceil(aforo/500);
-  const valorUnitario = Math.round(SMMLV_2026*cat.factor);
-  return { modo:"Sin cobro de entrada — tarifa general", valor:valorUnitario*bloques, detalle:bloques+" bloque(s) de 500p × "+cat.factor+" SMMLV ("+cat.label+")", verificar:true };
+  const valor = Math.round(SMMLV_2026 * factorSMMLV * bloques);
+  return {
+    modo: "Sin cobro de entrada — tarifa general (" + (ciudadCapital?"capital":"pueblo") + ")",
+    valor,
+    detalle: bloques+" bloque(s) de "+fmt(bloque)+"p × "+Math.round(factorSMMLV*100)+"% SMMLV ("+cat.label+")",
+    verificar: false,
+  };
 }
 
-function calcularACINPRO(aforo, tipoMusica, cobraEntrada, ingresosBoleteria){
-  if(cobraEntrada){
-    return { modo:"Con cobro de entrada", valor:Math.round((ingresosBoleteria||0)*0.05), detalle:"5% sobre ingresos por boletería" };
+function calcularSAYCO(aforo, categoria, cobraEntrada, esGubernamental, ciudadCapital, ingresosBrutos, tipoProductor){
+  const cat = categoriasSAYCO.find(c=>c.id===categoria) || categoriasSAYCO[2];
+  // Tarifas "con cobro de entrada" según importancia de la música (Manual, pág. 4 y 6)
+  const tarifaConCobro = {
+    imprescindible: tipoProductor==="permanente" ? 0.08 : 0.10,
+    necesaria: 0.07,
+    ambiental: 0.04,
+    incidental: 0.01,
+  }[categoria] ?? 0.10;
+
+  if(esGubernamental){
+    if(cobraEntrada){
+      // Pág. 11: si cobran entrada, mínimo 60% de la tarifa "con cobro" correspondiente.
+      const valor = Math.round((ingresosBrutos||0) * tarifaConCobro * 0.60);
+      return {
+        modo: "Entidad gubernamental — con cobro de entrada",
+        valor,
+        detalle: "Mínimo 60% de "+Math.round(tarifaConCobro*100)+"% ("+cat.label+", "+(tipoProductor==="permanente"?"permanente":"ocasional")+") sobre ingresos brutos",
+        verificar: false,
+      };
+    }
+    const aforoMax = ciudadCapital ? 1000 : 3000; // Pág. 11
+    if(aforo > aforoMax){
+      const general = calcularSAYCOGeneralSinCobro(aforo, categoria, ciudadCapital);
+      return Object.assign({}, general, {
+        modo: general.modo + " — excede el aforo máx. del régimen gubernamental ("+fmt(aforoMax)+"p), se aplicó la tarifa general",
+        excedioGubernamental: true,
+      });
+    }
+    const factor = ciudadCapital ? 1 : 0.5;
+    const valor = Math.round(SMMLV_2026*factor);
+    return {
+      modo: "Entidad gubernamental / caja de compensación — sin cobro de entrada",
+      valor,
+      detalle: factor+" SMMLV por evento diario · aforo máx. "+fmt(aforoMax)+" ("+(ciudadCapital?"capital":"pueblo")+")",
+      excedeAforo: false, verificar: false,
+    };
   }
-  const escalaMixta = [{max:250,smmlv:0.6},{max:500,smmlv:1.2},{max:1000,smmlv:2.5},{max:3000,smmlv:6},{max:10000,smmlv:14},{max:45000,smmlv:24},{max:Infinity,smmlv:30}];
-  const escalaFono = [{max:250,smmlv:1},{max:500,smmlv:1.8},{max:1000,smmlv:3.5},{max:3000,smmlv:8},{max:10000,smmlv:17},{max:45000,smmlv:27},{max:Infinity,smmlv:33}];
-  const escala = tipoMusica==="mixta" ? escalaMixta : escalaFono;
-  const fila = escala.find(e=>aforo<=e.max);
-  return { modo:"Sin cobro de entrada — tarifa por aforo", valor:Math.round(SMMLV_2026*fila.smmlv), detalle:fila.smmlv+" SMMLV ("+(tipoMusica==="mixta"?"en vivo + fonograma":"solo fonograma")+")" };
+
+  if(cobraEntrada){
+    // Pág. 4: si la boleta vale menos del 2% de 1 SMMLV, se trata como evento sin cobro de entrada.
+    const boletaProm = aforo>0 ? (ingresosBrutos||0)/aforo : 0;
+    const umbral = SMMLV_2026*0.02;
+    if(boletaProm>0 && boletaProm<umbral){
+      const general = calcularSAYCOGeneralSinCobro(aforo, categoria, ciudadCapital);
+      return Object.assign({}, general, { modo: general.modo + " — boleta promedio < 2% SMMLV, se aplicó tarifa de evento sin cobro" });
+    }
+    const valor = Math.round((ingresosBrutos||0) * tarifaConCobro);
+    return {
+      modo: "Con cobro de entrada — "+(tipoProductor==="permanente"?"Productor permanente":"Productor ocasional"),
+      valor,
+      detalle: Math.round(tarifaConCobro*100)+"% sobre ingresos brutos ("+cat.label+")",
+      verificar: false,
+    };
+  }
+
+  return calcularSAYCOGeneralSinCobro(aforo, categoria, ciudadCapital);
+}
+
+// ACINPRO — Reglamento de Tarifas IN-R-01 V03, verificado contra el documento oficial compartido.
+// Art. 24: con cobro de entrada, 5% sobre el 100% de ingresos de boletería — pero si ese resultado es
+// menor a la tarifa base de concertación por aforo (Art. 25), se aplica esa tarifa base como mínimo.
+const escalaACINPROMixta = [ // Art. 25 — música fonograbada EN CONCURRENCIA con ejecuciones en vivo
+  {max:250,smmlv:0.6},{max:500,smmlv:1},{max:1500,smmlv:2},{max:3000,smmlv:3},{max:5000,smmlv:4},
+  {max:7500,smmlv:5},{max:10000,smmlv:6},{max:15000,smmlv:7},{max:20000,smmlv:8},{max:25000,smmlv:10},
+  {max:30000,smmlv:15},{max:35000,smmlv:20},{max:45000,smmlv:25},{max:Infinity,smmlv:30},
+];
+const escalaACINPROFono = [ // Art. 25 — música fonograbada EXCLUSIVAMENTE
+  {max:250,smmlv:1},{max:500,smmlv:2},{max:1500,smmlv:3},{max:3000,smmlv:4},{max:5000,smmlv:5},
+  {max:7500,smmlv:6},{max:10000,smmlv:7},{max:15000,smmlv:8},{max:20000,smmlv:9},{max:25000,smmlv:11},
+  {max:30000,smmlv:16},{max:35000,smmlv:22},{max:45000,smmlv:27},{max:Infinity,smmlv:33},
+];
+function calcularACINPRO(aforo, tipoMusica, cobraEntrada, ingresosBoleteria){
+  const escala = tipoMusica==="mixta" ? escalaACINPROMixta : escalaACINPROFono;
+  const fila = escala.find(e=>aforo<=e.max) || escala[escala.length-1];
+  const tarifaBase = Math.round(SMMLV_2026 * fila.smmlv);
+
+  if(cobraEntrada){
+    const valorPorcentual = Math.round((ingresosBoleteria||0)*0.05);
+    const valor = Math.max(valorPorcentual, tarifaBase);
+    return {
+      modo: "Con cobro de entrada",
+      valor,
+      detalle: valor===valorPorcentual
+        ? "5% sobre ingresos brutos de boletería"
+        : "5% de ingresos ("+fmtMoney(valorPorcentual)+") es menor a la tarifa base de concertación por aforo — se aplicó el mínimo de "+fila.smmlv+" SMMLV ("+(tipoMusica==="mixta"?"en vivo + fonograma":"solo fonograma")+")",
+    };
+  }
+  return {
+    modo: "Sin cobro de entrada — tarifa base de concertación por aforo",
+    valor: tarifaBase,
+    detalle: fila.smmlv+" SMMLV ("+(tipoMusica==="mixta"?"en vivo + fonograma":"solo fonograma")+")",
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1427,7 +1513,7 @@ let state = Object.assign({
   nombreEvento: "", aforo: 0, espacio: "abierto", sectorId: "C3", tablaNorma: "emision", hora: 0,
   alteraCiudad: false, impacto: "moderado", tipoEvento: "social", lineaArtistica: "Música",
   categoriaSayco: "ambiental", cobraEntrada: false,
-  esGubernamental: true, ciudadCapital: true, tipoMusica: "mixta", ingresosBrutos: 0,
+  esGubernamental: true, ciudadCapital: true, tipoMusica: "mixta", ingresosBrutos: 0, tipoProductor: "ocasional",
   esComplejoSalud: false, checks: {}, usarAPHSimplificado: false,
   componentes: { mediosAltos:true, bajos:true, monitores:true, inalambricos:true, tecnicos:true, escenaristas:true },
   insumosSeleccionados: [],
@@ -1437,8 +1523,8 @@ let state = Object.assign({
     { id:1, nombre:"Grupo 1", tipo:"Banda", hombres:0, mujeres:0, otroGenero:0,
       tipoMonitoreo:"wedges", mezclasMonitor:0, notas:"",
       rows:[
-        { id:1, canal:1, instrumento:"", micdi:"", notas:"", posicion:"", stagebox:"", micdiCustom:false },
-        { id:2, canal:2, instrumento:"", micdi:"", notas:"", posicion:"", stagebox:"", micdiCustom:false },
+        { id:1, canal:1, instrumento:"", micdi:"", notas:"", posicion:"", stagebox:"", micdiCustom:false, instrumentoCustom:false },
+        { id:2, canal:2, instrumento:"", micdi:"", notas:"", posicion:"", stagebox:"", micdiCustom:false, instrumentoCustom:false },
       ]},
   ],
   ilNombreEvento: "", ilLugar: "", ilFecha: "", ilContacto: "",
@@ -1666,7 +1752,7 @@ function panelEvento(){
   const comp = getCompliance627(state.sectorId, horario, state.espacio, state.tablaNorma);
   const sys = getRec(state.aforo);
   const pot = potenciaSonido(state.aforo, state.espacio, state.tipoEvento);
-  const sayco = calcularSAYCO(state.aforo, state.categoriaSayco, state.cobraEntrada, state.esGubernamental, state.ciudadCapital, state.ingresosBrutos);
+  const sayco = calcularSAYCO(state.aforo, state.categoriaSayco, state.cobraEntrada, state.esGubernamental, state.ciudadCapital, state.ingresosBrutos, state.tipoProductor);
   const acinpro = calcularACINPRO(state.aforo, state.tipoMusica, state.cobraEntrada, state.ingresosBrutos);
   const totalDerechos = sayco.valor + acinpro.valor;
 
@@ -1779,26 +1865,26 @@ function panelEvento(){
 
   <div class="sec">
     <h3>4. Derechos de Autor y Conexos</h3>
-    <p class="sub">SAYCO (Ley 23/1982) + ACINPRO (Decreto 3942/2010) · SMMLV 2026 = ${fmtMoney(SMMLV_2026)}</p>
+    <p class="sub">SAYCO — Manual de Tarifas Res. 007/2017, mod. Res. 83/2024 · ACINPRO (Decreto 3942/2010) · SMMLV 2026 = ${fmtMoney(SMMLV_2026)}</p>
     <div class="grid2" style="margin-bottom:10px">
       <div><label class="lbl">¿Cobra entrada?</label>${toggleGroup('cobraEntrada',[{v:'false',l:'No'},{v:'true',l:'Sí'}],state.cobraEntrada,'var(--orange)')}</div>
       <div><label class="lbl">¿Entidad gubernamental / caja?</label>${toggleGroup('esGubernamental',[{v:'true',l:'Sí'},{v:'false',l:'No'}],state.esGubernamental,'var(--green)')}</div>
     </div>
-    ${state.cobraEntrada ? `
-      <div style="margin-bottom:10px"><label class="lbl">Ingresos brutos esperados (boletería)</label>
-      <input type="number" id="in-ingresos" value="${state.ingresosBrutos}" min="0"></div>
-    ` : `
-      <div class="grid2" style="margin-bottom:10px">
-        ${state.esGubernamental ? `
-          <div><label class="lbl">Ubicación</label>${toggleGroup('ciudadCapital',[{v:'true',l:'Capital'},{v:'false',l:'Pueblo'}],state.ciudadCapital)}</div>
-        ` : `
-          <div><label class="lbl">Categoría música (SAYCO)</label>
-            <select id="in-catSayco">${categoriasSAYCO.map(c=>`<option value="${c.id}" ${state.categoriaSayco===c.id?'selected':''}>${c.label}</option>`).join('')}</select>
-          </div>
-        `}
-        <div><label class="lbl">Tipo de música (ACINPRO)</label>${toggleGroup('tipoMusica',[{v:'mixta',l:'Vivo+Fono'},{v:'fono',l:'Solo fonograma'}],state.tipoMusica,'var(--magenta)')}</div>
+    <div class="grid2" style="margin-bottom:10px">
+      <div><label class="lbl">Ubicación</label>${toggleGroup('ciudadCapital',[{v:'true',l:'Capital'},{v:'false',l:'Pueblo'}],state.ciudadCapital)}</div>
+      <div><label class="lbl">Categoría música (SAYCO)</label>
+        <select id="in-catSayco">${categoriasSAYCO.map(c=>`<option value="${c.id}" ${state.categoriaSayco===c.id?'selected':''}>${c.label}</option>`).join('')}</select>
       </div>
-    `}
+    </div>
+    ${state.cobraEntrada ? `
+      <div class="grid2" style="margin-bottom:10px">
+        <div><label class="lbl">Ingresos brutos esperados (boletería)</label>
+        <input type="number" id="in-ingresos" value="${state.ingresosBrutos}" min="0"></div>
+        <div><label class="lbl">Tipo de productor</label>${toggleGroup('tipoProductor',[{v:'ocasional',l:'Ocasional'},{v:'permanente',l:'Permanente'}],state.tipoProductor,'var(--teal)')}</div>
+      </div>
+      <p style="font-size:9px;color:rgba(255,255,255,.3);margin:-4px 0 10px">"Permanente" aplica solo si Comfama está registrada como Productor Permanente de espectáculos públicos ante el Ministerio de Cultura (Ley 1493/2011); si no, usá "Ocasional".</p>
+    ` : ''}
+    <div style="margin-bottom:10px"><label class="lbl">Tipo de música (ACINPRO)</label>${toggleGroup('tipoMusica',[{v:'mixta',l:'Vivo+Fono'},{v:'fono',l:'Solo fonograma'}],state.tipoMusica,'var(--magenta)')}</div>
     <div style="display:flex;flex-direction:column;gap:8px">
       <div style="padding:10px 12px;background:rgba(0,229,255,.05);border-radius:10px;border:1px solid rgba(0,229,255,.15)">
         <div style="display:flex;justify-content:space-between;align-items:baseline">
@@ -1807,7 +1893,8 @@ function panelEvento(){
         </div>
         <div style="font-size:10px;color:rgba(255,255,255,.35);margin-top:2px">${sayco.modo} · ${sayco.detalle}</div>
         ${sayco.excedeAforo ? '<div style="font-size:10px;color:var(--red);margin-top:4px">⚠️ El aforo excede el límite de la tarifa especial gubernamental — verificar con SAYCO.</div>' : ''}
-        ${sayco.verificar ? '<div style="font-size:10px;color:var(--amber);margin-top:4px">⚠️ Cifra calculada con la tarifa general por bloques de 500 personas — confirmá el valor exacto contra el tarifario SAYCO vigente antes de usarlo como definitivo.</div>' : ''}
+        ${sayco.excedioGubernamental ? '<div style="font-size:10px;color:var(--amber);margin-top:4px">ℹ️ Este aforo supera el máximo del régimen gubernamental, así que se calculó con la tarifa general (por bloques).</div>' : ''}
+        ${sayco.verificar ? '<div style="font-size:10px;color:var(--amber);margin-top:4px">⚠️ Confirmá este valor contra el tarifario SAYCO vigente antes de usarlo como definitivo.</div>' : ''}
       </div>
       <div style="padding:10px 12px;background:rgba(224,64,251,.05);border-radius:10px;border:1px solid rgba(224,64,251,.15)">
         <div style="display:flex;justify-content:space-between;align-items:baseline">
@@ -1815,6 +1902,7 @@ function panelEvento(){
           <span style="font-size:16px;font-weight:800;color:var(--magenta);font-family:monospace">${fmtMoney(acinpro.valor)}</span>
         </div>
         <div style="font-size:10px;color:rgba(255,255,255,.35);margin-top:2px">${acinpro.modo} · ${acinpro.detalle}</div>
+        <div style="font-size:10px;color:rgba(255,255,255,.3);margin-top:4px">Verificado contra el Reglamento de Tarifas ACINPRO (IN-R-01 V03), Art. 24-25.</div>
       </div>
       <div style="padding:10px 12px;background:rgba(255,179,0,.08);border-radius:10px;border:1px solid rgba(255,179,0,.25);display:flex;justify-content:space-between;align-items:center">
         <span style="font-size:12px;color:var(--amber);font-weight:700">Total Derechos de Autor</span>
@@ -2211,10 +2299,6 @@ function panelInputList(){
     </div>
   </div>
 
-  <datalist id="dl-instrumentos">
-    ${instrumentosComunes.map(i=>`<option value="${i}">`).join('')}
-  </datalist>
-
   ${grupos.map((g,gi)=>{
     const abierto = grupoOpen===gi;
     const totalIntegrantes = (+g.hombres||0)+(+g.mujeres||0)+(+g.otroGenero||0);
@@ -2264,7 +2348,18 @@ function panelInputList(){
             </div>
             <div>
               <label class="lbl" style="font-size:8px">Instrumento / Voz</label>
-              <input type="text" id="row-instrumento-${g.id}-${r.id}" data-row-field="instrumento" data-row-gid="${g.id}" data-row-id="${r.id}" list="dl-instrumentos" value="${r.instrumento}" placeholder="Ej. Kick In" style="margin-bottom:8px">
+              ${r.instrumentoCustom ? `
+                <div style="display:flex;gap:6px;margin-bottom:8px">
+                  <input type="text" id="row-instrumento-${g.id}-${r.id}" data-row-field="instrumento" data-row-gid="${g.id}" data-row-id="${r.id}" value="${r.instrumento}" placeholder="Escribí el instrumento" style="flex:1">
+                  <button type="button" class="btn-ghost" data-row-inst-back="${g.id}:${r.id}">🔽</button>
+                </div>
+              ` : `
+                <select id="row-instsel-${g.id}-${r.id}" data-row-inst-select="${g.id}:${r.id}" style="margin-bottom:8px">
+                  ${!r.instrumento ? `<option value="" disabled selected>Elegí un instrumento…</option>` : ''}
+                  ${instrumentosComunes.map(op=>`<option value="${op}" ${r.instrumento===op?'selected':''}>${op}</option>`).join('')}
+                  <option value="__custom__">Otro (escribir)</option>
+                </select>
+              `}
             </div>
             <label class="lbl" style="font-size:8px">Stage box / cable (opcional)</label>
             <input type="text" id="row-posicion-${g.id}-${r.id}" data-row-field="posicion" data-row-gid="${g.id}" data-row-id="${r.id}" value="${r.posicion}" placeholder="Ej. A1, C4…" style="margin-bottom:2px">
@@ -2457,7 +2552,7 @@ function bindEvents(){
     const sys = getRec(state.aforo);
     const pot = potenciaSonido(state.aforo, state.espacio, state.tipoEvento);
     const tipoLabel = (tiposEvento.find(t=>t.id===state.tipoEvento)||{}).l || state.tipoEvento;
-    const sayco = calcularSAYCO(state.aforo, state.categoriaSayco, state.cobraEntrada, state.esGubernamental, state.ciudadCapital, state.ingresosBrutos);
+    const sayco = calcularSAYCO(state.aforo, state.categoriaSayco, state.cobraEntrada, state.esGubernamental, state.ciudadCapital, state.ingresosBrutos, state.tipoProductor);
     const acinpro = calcularACINPRO(state.aforo, state.tipoMusica, state.cobraEntrada, state.ingresosBrutos);
 
     // Salud — se trae el recurso ya calculado en la pestaña Salud, con el mismo aforo/tipo de evento.
@@ -2705,7 +2800,7 @@ function bindEvents(){
     const grupos = state.gruposInputList.concat([{
       id: nextId, nombre: "Grupo "+nextId, tipo:"Banda", hombres:0, mujeres:0, otroGenero:0,
       tipoMonitoreo:"wedges", mezclasMonitor:0, notas:"",
-      rows: [{ id:Date.now(), canal:1, instrumento:"", micdi:"", notas:"", posicion:"", stagebox:"", micdiCustom:false }],
+      rows: [{ id:Date.now(), canal:1, instrumento:"", micdi:"", notas:"", posicion:"", stagebox:"", micdiCustom:false, instrumentoCustom:false }],
     }]);
     grupoOpen = grupos.length - 1;
     setState({ gruposInputList: grupos });
@@ -2730,6 +2825,31 @@ function bindEvents(){
     };
     el.onblur = () => renderAll(); // refresca sugerencias de mic al terminar de escribir el instrumento
     if(el.tagName==='SELECT') el.onchange = () => { el.oninput(); renderAll(); };
+  });
+
+  // input list — selector de instrumento por canal (select real: el <datalist> no funciona en Safari/iPad)
+  document.querySelectorAll('[data-row-inst-select]').forEach(sel=>{
+    sel.onchange = () => {
+      const [gidStr, ridStr] = sel.dataset.rowInstSelect.split(':');
+      const gid = +gidStr, rid = +ridStr, val = sel.value;
+      const grupos = state.gruposInputList.map(g=> g.id!==gid ? g : Object.assign({}, g, {
+        rows: g.rows.map(r=>{
+          if(r.id!==rid) return r;
+          return val === "__custom__" ? Object.assign({}, r, { instrumentoCustom:true }) : Object.assign({}, r, { instrumento: val, instrumentoCustom:false });
+        })
+      }));
+      setState({ gruposInputList: grupos });
+    };
+  });
+  document.querySelectorAll('[data-row-inst-back]').forEach(btn=>{
+    btn.onclick = () => {
+      const [gidStr, ridStr] = btn.dataset.rowInstBack.split(':');
+      const gid = +gidStr, rid = +ridStr;
+      const grupos = state.gruposInputList.map(g=> g.id!==gid ? g : Object.assign({}, g, {
+        rows: g.rows.map(r=> r.id===rid ? Object.assign({}, r, { instrumentoCustom:false, instrumento:"" }) : r)
+      }));
+      setState({ gruposInputList: grupos });
+    };
   });
 
   // input list — selector de mic/DI sugerido por canal
@@ -2764,7 +2884,7 @@ function bindEvents(){
       const grupos = state.gruposInputList.map(g=>{
         if(g.id!==gid) return g;
         const nextCanal = g.rows.length ? Math.max(...g.rows.map(r=>r.canal))+1 : 1;
-        return Object.assign({}, g, { rows: g.rows.concat([{ id:Date.now(), canal:nextCanal, instrumento:"", micdi:"", notas:"", posicion:"", stagebox:"", micdiCustom:false }]) });
+        return Object.assign({}, g, { rows: g.rows.concat([{ id:Date.now(), canal:nextCanal, instrumento:"", micdi:"", notas:"", posicion:"", stagebox:"", micdiCustom:false, instrumentoCustom:false }]) });
       });
       setState({ gruposInputList: grupos });
     };
